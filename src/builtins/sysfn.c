@@ -1084,7 +1084,7 @@ B sh_c2(B t, B w, B x) {
     bool any = false;
     if (ps[out_i].revents & POLLIN) while(true) { i64 len = read(p_out[0], &oBuf[0], bufsz); shDbg("read stdout "N64d"\n",len); if(len<=0) break; else any=true; *oBufIA = len; s_out = vec_join(s_out, incG(oBufObj)); }
     if (ps[err_i].revents & POLLIN) while(true) { i64 len = read(p_err[0], &oBuf[0], bufsz); shDbg("read stderr "N64d"\n",len); if(len<=0) break; else any=true; *oBufIA = len; s_err = vec_join(s_err, incG(oBufObj)); }
-     if (!iDone && ps[in_i].revents & POLLOUT) {
+    if (!iDone && ps[in_i].revents & POLLOUT) {
       shDbg("writing "N64u"\n", iLen-iOff);
       ssize_t ww = write(p_in[1], iBuf+iOff, iLen-iOff);
       shDbg("written %zd/"N64u"\n", ww, iLen-iOff);
@@ -1133,6 +1133,256 @@ B sh_c2(B t, B w, B x) {
            : -1;
   return m_hvec3(m_i32(code), s_outObj, s_errObj);
 }
+
+#elif defined(_WIN32) || defined(_WIN64)
+
+#define HAS_SH 1
+
+// https://github.com/libuv/libuv/blob/v1.23.0/src/win/process.c#L454-L524
+static char* quoteCmdArg(char* source, char* target) {
+  u64 len = strlen(source);
+  if (len==0) {
+    // Need double quotation for empty argument 
+    *(target++) = '"'; *(target++) = '"'; 
+    return target;
+  }
+  if (NULL==strpbrk(source, " \t\"")) {
+    // No quotation needed 
+    memcpy(target, source, len * sizeof(char)); target += len;
+    return target;  
+  }
+  if (NULL==strpbrk(source, "\"\\")) {
+    // No embedded double quotes or backlashes, so I can just wrap
+    // quote marks around the whole thing.
+    *(target++) = '"';
+    memcpy(target, source, len * sizeof(char)); target += len;
+    *(target++) = '"';
+    return target;
+  }
+
+  *(target++) = '"';
+  char *start = target;
+  int quote_hit = 1;
+
+  for (u64 i = 0; i < len; ++i) {
+    *(target++) = source[len - 1 - i];
+    
+    if (quote_hit && source[len - 1 - i]=='\\') {
+      *(target++) = '\\';
+    } else if (source[len - 1 - i]=='"') {
+      quote_hit = 1;
+      *(target++) = '\\';
+    } else {
+      quote_hit = 0;
+    }
+  }
+  target[0] = '\0';
+  _strrev(start);
+  *(target++) = '"';
+  return target;
+}
+
+static u64 quoteCmdArgLen(char* source) {
+  u64 len = strlen(source);
+  if (len==0) {
+    return 2; // ""
+  }
+  if (NULL==strpbrk(source, " \t\"")) {
+    return len; // No quotation needed 
+  }
+  if  (NULL==strpbrk(source, "\"\\")) {
+    // No embedded double quotes or backlashes, so I can just wrap
+    // quote marks around the whole thing.
+    return 2 + len;
+  }
+  int quote_hit = 1;
+  u64 result = 1;
+  for (u64 i = 0; i < len; ++i) {
+    if (quote_hit && source[len - 1 - i]=='\\') {
+      ++result;
+    } else if (source[len - 1 - i]=='"') {
+      quote_hit = 1;
+      ++result;
+    } else {
+      quote_hit = 0;
+    }
+  }
+  return 1 + result + len;
+} 
+
+void winPrintError(const char* failed) {
+  char* msgBuf = NULL;
+  FormatMessageA(
+    FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+    NULL, GetLastError(), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR)&msgBuf, 0, NULL);
+  thrF("Failed to %S: %S", failed, msgBuf);
+  // LocalFree(msgBuf);
+}
+
+B sh_c2(B t, B w, B x) {
+  
+  // parse options
+  B inObj = bi_N;
+  bool raw = false;
+  if (!q_N(w)) {
+    if (!isNsp(w)) thrM("•SH: 𝕨 must be a namespace");
+    inObj = ns_getC(w, "stdin");
+    if (!q_N(inObj) && !isArr(inObj)) thrM("•SH: Invalid stdin value");
+    B rawObj = ns_getC(w, "raw");
+    if (!q_N(rawObj)) raw = o2b(rawObj);
+  }
+  u64 iLen = q_N(inObj)? 0 : (raw? IA(inObj) : utf8lenB(inObj));
+
+  if (isAtm(x) || RNK(x)>1) thrM("•SH: 𝕩 must be a vector of strings");
+  usz xia = IA(x);
+  if (xia==0) thrM("•SH: 𝕩 must have at least one item");
+  u64 arglen = 0;
+  TALLOC(char*, argv, xia+1);
+  SGetU(x)
+  for (u64 i = 0; i < xia; i++) {
+    B c = GetU(x, i);
+    if (isAtm(c) || RNK(c)!=1) thrM("•SH: 𝕩 must be a vector of strings");
+    u64 len = utf8lenB(c);
+    TALLOC(char, cstr, len+1);
+    toUTF8(c, cstr);
+    cstr[len] = 0;
+    argv[i] = cstr;
+    arglen += 1 + quoteCmdArgLen(argv[i]);
+  }
+  argv[xia] = NULL;
+  TALLOC(char, arg, arglen);
+  char* r = arg;
+  for (u64 i = 0; i < xia; i++) { 
+    r = quoteCmdArg(argv[i], r);
+    *(r++) = xia==i+1? '\0' : ' '; 
+    TFREE(argv[i])
+  }
+  TFREE(argv);
+
+  HANDLE hInpR, hInpW;
+  HANDLE hOutR, hOutW;
+  HANDLE hErrR, hErrW;
+
+  // Create pipes 
+  SECURITY_ATTRIBUTES sa;
+  sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+  sa.lpSecurityDescriptor = NULL;
+  sa.bInheritHandle = TRUE;
+
+  CreatePipe(&hInpR, &hInpW, &sa, 0);
+  CreatePipe(&hOutR, &hOutW, &sa, 0);
+  CreatePipe(&hErrR, &hErrW, &sa, 0);
+
+  SetHandleInformation(hInpW, HANDLE_FLAG_INHERIT, 0);
+  SetHandleInformation(hOutR, HANDLE_FLAG_INHERIT, 0);
+  SetHandleInformation(hErrR, HANDLE_FLAG_INHERIT, 0);
+
+  // Set up 
+  STARTUPINFO si;
+  ZeroMemory(&si, sizeof(STARTUPINFO));
+  si.cb = sizeof(STARTUPINFO);
+  si.hStdInput = hInpR;
+  si.hStdOutput = hOutW;
+  si.hStdError = hErrW;
+  si.dwFlags |= STARTF_USESTDHANDLES;
+
+  PROCESS_INFORMATION pi;
+  ZeroMemory(&pi, sizeof(PROCESS_INFORMATION));
+
+  // Create the child process
+  BOOL bSuccess = CreateProcessA(NULL, arg, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
+  if (!bSuccess) {winPrintError("create process");}
+
+  // Close the unneeded
+  CloseHandle(hInpR);
+  CloseHandle(hOutW);
+  CloseHandle(hErrW);
+
+  TFREE(arg);
+
+  // allocate stdin
+  char* iBuf;
+  CharBuf iBufRaw;
+  if (iLen>0) {
+    if (raw) {
+      iBufRaw = get_chars(inObj);
+      iBuf = iBufRaw.data;
+    } else {
+      iBuf = TALLOCP(char, iLen);
+      toUTF8(inObj, iBuf);
+    }
+  } else iBuf = NULL;
+
+  // Input
+  DWORD dwWritten;
+  if (!WriteFile(hInpW, iBuf, (DWORD)iLen, &dwWritten, NULL) || iLen!=dwWritten) {winPrintError("write to stdin");}
+  if (iLen>0) { if (raw) free_chars(iBufRaw); else TFREE(iBuf); }  // FREE_INPUT
+  CloseHandle(hInpW);
+
+  // allocate output buffer
+  B s_out = emptyCVec();
+  B s_err = emptyCVec();
+
+  const u64 bufsz = 1024;
+  u8* oBuf;
+  B oBufObj = m_c8arrv(&oBuf, bufsz);
+  usz* oBufIA = &a(oBufObj)->ia;
+
+  DWORD dwRead, dwAvail;
+  BOOL bOutEnd = FALSE, bErrEnd = FALSE;
+
+  // Hack: read stdout and stderr until we can't 
+  for (;;) {
+    ZeroMemory(oBuf, bufsz);
+    if (PeekNamedPipe(hOutR, NULL, 0, NULL, &dwAvail, NULL)) {
+      if (dwAvail>0 && ReadFile(hOutR, oBuf, bufsz, &dwRead, NULL) && dwRead>0) {
+        *oBufIA = (i64)dwRead; s_out = vec_join(s_out, incG(oBufObj)); 
+      }
+    } else if (GetLastError()==ERROR_BROKEN_PIPE) {bOutEnd = TRUE;
+    } else {winPrintError("read from stdout");}
+    ZeroMemory(oBuf, bufsz);
+    if (PeekNamedPipe(hErrR, NULL, 0, NULL, &dwAvail, NULL)) {
+      if (dwAvail>0 && ReadFile(hErrR, oBuf, bufsz, &dwRead, NULL) && dwRead>0) {
+        *oBufIA = (i64)dwRead; s_err = vec_join(s_err, incG(oBufObj));
+      }
+    } else if (GetLastError()==ERROR_BROKEN_PIPE) {bErrEnd = TRUE;
+    } else {winPrintError("read from stderr");}
+    if (bOutEnd && bErrEnd) {break;}
+  }
+
+  // Get the exit code
+  DWORD code = 0; i32 cnt = 0;
+  do {GetExitCodeProcess(pi.hProcess, &code); cnt++;} while (code==259 && cnt<100); 
+  // the process should end by now...
+
+  // Close handles
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  CloseHandle(hOutR);
+  CloseHandle(hErrR);
+
+  // free output buffer
+  assert(reusable(oBufObj));
+  #if VERIFY_TAIL
+  *oBufIA = bufsz;
+  #endif
+  mm_free(v(oBufObj));
+
+  dec(w); dec(x);
+  B s_outRaw = toC8Any(s_out);
+  B s_errRaw = toC8Any(s_err);
+  B s_outObj;
+  B s_errObj;
+  if (raw) {
+    s_outObj = s_outRaw;
+    s_errObj = s_errRaw;
+  } else {
+    s_outObj = utf8Decode((char*)c8any_ptr(s_outRaw), IA(s_outRaw)); dec(s_outRaw);
+    s_errObj = utf8Decode((char*)c8any_ptr(s_errRaw), IA(s_errRaw)); dec(s_errRaw);
+  }
+  return m_hvec3(m_i32((i32)code), s_outObj, s_errObj);
+}
+
 #else
 #define HAS_SH 0
 B sh_c2(B t, B w, B x) { thrM("•SH: CBQN was compiled without <spawn.h>"); }
