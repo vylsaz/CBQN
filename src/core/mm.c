@@ -10,7 +10,14 @@ static u64 prepAllocSize(u64 sz) {
   if (psz < minTotPad) psz = minTotPad;
   return sz + psz;
 }
+
+#if !defined(_WIN32)
 #define MMAP(SZ) mmap(NULL, prepAllocSize(SZ), PROT_READ|PROT_WRITE, MAP_NORESERVE|MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
+#else
+#include <windows.h>
+#define MAP_FAILED NULL
+#define MMAP(SZ) VirtualAlloc(NULL, prepAllocSize(SZ), MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
+#endif
 
 bool mem_log_enabled;
 

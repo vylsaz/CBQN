@@ -61,7 +61,8 @@ static NOINLINE void* BN(allocateMore)(i64 bucket, u8 type, i64 from, i64 to) {
   }
   
   if (mem_log_enabled) fprintf(stderr, "requesting "N64u" more " STR1(BN()) " heap (during allocation of "N64u"B t_%s)", sz, (u64)BSZ(bucket), type_repr(type));
-  #if NO_MMAP
+
+  #if NO_MMAP && !defined(_WIN32)
     EmptyValue* c = calloc(sz+getPageSize(), 1);
     if (mem_log_enabled) fprintf(stderr, "\n");
   #else

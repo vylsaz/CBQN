@@ -1153,16 +1153,24 @@ void md2Bl_print(FILE* f, B x) { fprintf(f,"{2-modifier block}"); }
 
 B block_decompose(B x) { return m_hvec2(m_i32(1), x); }
 
-#if !defined(_WIN32) && !defined(_WIN64)
-static usz pageSizeV;
+#if defined(_WIN32)
+#include <windows.h>
 #endif
+
+static usz pageSizeV;
 
 usz getPageSize() {
   #if defined(_WIN32) || defined(_WIN64)
     #if !NO_MMAP
       #error "Windows builds must have NO_MMAP=1"
     #endif
-    return 1; // doesn't actually need to be accurate if NO_MMAP, which Windows builds should have
+    if (pageSizeV==0) {
+      SYSTEM_INFO si;
+      GetSystemInfo(&si);
+      pageSizeV = si.dwPageSize;
+    }
+    return pageSizeV;
+    // return 1; // doesn't actually need to be accurate if NO_MMAP, which Windows builds should have
   #else
     if (pageSizeV==0) pageSizeV = sysconf(_SC_PAGESIZE);
     return pageSizeV;
@@ -1173,7 +1181,9 @@ static void allocStack(void** curr, void** start, void** end, i32 elSize, i32 co
   usz ps = getPageSize();
   u64 sz = (elSize*count + ps-1)/ps * ps;
   assert(sz%elSize == 0);
-  #if NO_MMAP
+  #if defined(_WIN32)
+  void* mem = VirtualAlloc(NULL, sz+ps, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+  #elif NO_MMAP
   void* mem = calloc(sz+ps, 1);
   #else
   void* mem = mmap(NULL, sz+ps, PROT_READ|PROT_WRITE, MAP_NORESERVE|MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
@@ -1183,6 +1193,9 @@ static void allocStack(void** curr, void** start, void** end, i32 elSize, i32 co
   *end = ((char*)*start)+sz;
   #if !WASM && !NO_MMAP
   mprotect(*end, ps, PROT_NONE); // idk first way i found to force erroring on overflow
+  #elif defined(_WIN32)
+  DWORD flOldProtect;
+  VirtualProtect(*end, ps, PAGE_NOACCESS, &flOldProtect);
   #endif
 }
 void print_vmStack() {
