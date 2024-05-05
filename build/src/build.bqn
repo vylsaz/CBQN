@@ -56,7 +56,8 @@ opts ← ⟨
   ⟨1, "FFI",       @, "Enable FFI through libffi; On by default for linux, BSD, macos"⟩
   ⟨1, "pkgconfig", 1, "Whether to attempt to use pkg-config to find libffi flags"⟩
   ⟨1, "singeli",   0, "Enable compilation with Singeli"⟩
-  ⟨1, "replxx",    0, "Enable REPLXX"∾@+10⟩
+  ⟨1, "replxx",    0, "Enable REPLXX"⟩
+  ⟨1, "replxx-io", @, "Use REPLXX for output; On by default for windows if REPLXX is enabled "∾@+10⟩
   
   ⟨0, "usz", "32", "Size of array length fields in bits; default 32, can be 32 or 64"⟩
   ⟨1, "c",      0, "Disable some default flags"⟩
@@ -261,6 +262,7 @@ po ← { # parsed options
   ffi ⇐ ((¬windows)∧¬wasm) DOpt "FFI"
   singeli ⇐ GetOpt "singeli"
   replxx ⇐ GetOpt "REPLXX"
+  replxxIo ⇐ replxx ∧ windows DOpt "replxx-io"
   
   has ⇐ ∾ ','Split¨Lowercase GetOpt "has"
   has ↩ ∧⍷has ∾ (⊑"slow-pdep"<⊸∊has)/⋈"bmi2"
@@ -351,7 +353,7 @@ po ← { # parsed options
     args∾↩ (             lib) / ⟨"-DCBQN_LIB"⟩
     args∾↩ (       sharedLib) / (¬GetOpt"no_fPIC")/⟨"-fPIC"⟩
     args∾↩ (         windows) / ⟨"-DNO_MMAP"⟩
-    args∾↩ (replxx ∧ windows) / ⟨"-DUSE_REPLXX_IO"⟩
+    args∾↩ (        replxxIo) / ⟨"-DUSE_REPLXX_IO"⟩
     args∾↩ (   @≢versionName) / ⟨"-DHAS_VERSION"⟩
     args∾↩ (          usz≡64) / ⟨"-DUSZ_64"⟩
     args∾↩ (∨´"slow-pdep"⊸≡¨ has) / ⟨"-DSLOW_PDEP"⟩
